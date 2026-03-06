@@ -1,0 +1,22 @@
+# Python bits
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+
+# VS Code bits
+.vscode/
+
+# Local data
+original/
+optimized/
+contrast/
+archive/
+
+# Image results
+*.jpg
+*.png
+*.bmp
+*.webp
