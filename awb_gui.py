@@ -1,186 +1,208 @@
 import cv2
 import numpy as np
-import tkinter as tk
+import customtkinter as ctk
+import os
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
-import ttkbootstrap as ttk
-from ttkbootstrap.constants import *
-from ttkbootstrap.widgets import ToastNotification
 
-# ========== 1. 核心算法 ==========
-def gray_world_awb(img, use_optimized=False):
-    """
-    Gray World White Balance algorithm.
-    img: BGR image from OpenCV
-    """
-    b, g, r = cv2.split(img)
-    
-    if use_optimized:
-        # 优化版：只考虑中间亮度区域，过滤高光和阴影的影响
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        mask = (gray >= 60) & (gray <= 180)
-        valid_ratio = np.sum(mask)/mask.size
-        if valid_ratio >= 0.1:
-            b_avg = np.mean(b[mask])
-            g_avg = np.mean(g[mask])
-            r_avg = np.mean(r[mask])
-        else:
-            b_avg = np.mean(b)
-            g_avg = np.mean(g)
-            r_avg = np.mean(r)
-    else:
-        b_avg = np.mean(b)
-        g_avg = np.mean(g)
-        r_avg = np.mean(r)
-    
-    K = (b_avg + g_avg + r_avg) / 3.0
-    gain_b = K / (b_avg + 1e-6)
-    gain_g = K / (g_avg + 1e-6)
-    gain_r = K / (r_avg + 1e-6)
-    
-    b_new = np.clip(b.astype(float) * gain_b, 0, 255)
-    g_new = np.clip(g.astype(float) * gain_g, 0, 255)
-    r_new = np.clip(r.astype(float) * gain_r, 0, 255)
-    
-    return cv2.merge([b_new.astype(np.uint8), g_new.astype(np.uint8), r_new.astype(np.uint8)])
+# 设置主题和外观
+ctk.set_appearance_mode("Dark")  # Modes: "System" (standard), "Dark", "Light"
+ctk.set_default_color_theme("blue")  # Themes: "blue" (standard), "green", "dark-blue"
 
-# ========== 2. 现代 GUI 设计 ==========
-class AWBApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Antigravity AWB - 智能白平衡校正")
-        self.root.geometry("1400x900")
+from core.awb_algorithms import gray_world_awb, perfect_reflector_awb
+
+# ========== 2. GUI主程序 (CustomTkinter版) ==========
+
+class AWBApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        
+        self.title("AWB 智能白平衡校正 Pro")
+        self.geometry("1400x900")
         
         # 状态变量
         self.original_img = None
         self.processed_img = None
-        self.current_path = None
+        self.display_original = None
+        self.display_processed = None
         
         self.setup_ui()
 
     def setup_ui(self):
+        # 配置网格布局 (1x2)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
         # --- 侧边栏 ---
-        self.sidebar = ttk.Frame(self.root, bootstyle=DARK, width=300, padding=20)
-        self.sidebar.pack(side=LEFT, fill=Y)
+        self.sidebar_frame = ctk.CTkFrame(self, width=280, corner_radius=0)
+        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
+        self.sidebar_frame.grid_rowconfigure(6, weight=1)
+
+        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="🎨 AWB 工具箱", font=ctk.CTkFont(family="微软雅黑", size=24, weight="bold"))
+        self.logo_label.grid(row=0, column=0, padx=20, pady=(30, 40))
+
+        # 导入按钮
+        self.btn_open = ctk.CTkButton(self.sidebar_frame, text="📷 导入图片", command=self.open_image, font=ctk.CTkFont(family="微软雅黑", size=14))
+        self.btn_open.grid(row=1, column=0, padx=20, pady=10)
+
+        # 算法选择标题
+        self.algo_label = ctk.CTkLabel(self.sidebar_frame, text="算法选择", anchor="w", font=ctk.CTkFont(family="微软雅黑", size=12))
+        self.algo_label.grid(row=2, column=0, padx=20, pady=(20, 0), sticky="w")
+
+        # 算法下拉菜单
+        self.algo_var = ctk.StringVar(value="优化版灰度世界 (v2)")
+        self.algo_menu = ctk.CTkOptionMenu(self.sidebar_frame, values=["基础版灰度世界 (v0)", "优化版灰度世界 (v2)", "完美反射体算法 (wp)"],
+                                         command=self.toggle_percent_param, variable=self.algo_var, font=ctk.CTkFont(family="微软雅黑", size=13))
+        self.algo_menu.grid(row=3, column=0, padx=20, pady=10)
+
+        # 完美反射体参数调节 (初始隐藏)
+        self.percent_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
+        self.percent_label_title = ctk.CTkLabel(self.percent_frame, text="高光像素占比: 5.0%", font=ctk.CTkFont(family="微软雅黑", size=12))
+        self.percent_label_title.pack(anchor="w", padx=0, pady=(10, 0))
         
-        # 侧边栏标题
-        ttk.Label(self.sidebar, text="🎨 AWB 工具箱", font=("Segoe UI Variable Display Semibold", 18), 
-                  bootstyle=(INVERSE, DARK)).pack(pady=(10, 30))
+        self.top_percent_var = ctk.DoubleVar(value=5.0)
+        self.percent_slider = ctk.CTkSlider(self.percent_frame, from_=0.1, to=10.0, number_of_steps=99,
+                                           variable=self.top_percent_var, command=self.update_slider_label)
+        self.percent_slider.pack(fill="x", padx=0, pady=10)
         
-        # 操作容器
-        controls_frame = ttk.Frame(self.sidebar, bootstyle=DARK)
-        controls_frame.pack(fill=X)
-        
-        # 按钮
-        self.btn_open = ttk.Button(controls_frame, text="📷 导入图片", command=self.open_image, 
-                                   bootstyle=LIGHT, width=20)
-        self.btn_open.pack(pady=10)
-        
-        ttk.Separator(controls_frame, bootstyle=SECONDARY).pack(fill=X, pady=20)
-        
-        ttk.Label(controls_frame, text="算法选择", font=("微软雅黑", 10), bootstyle=(INVERSE, DARK)).pack(anchor=W)
-        self.algo_var = tk.StringVar(value="优化版算法 (v2)")
-        self.algo_combo = ttk.Combobox(controls_frame, textvariable=self.algo_var, 
-                                       values=["基础版算法 (v0)", "优化版算法 (v2)"],
-                                       state="readonly")
-        self.algo_combo.pack(fill=X, pady=(5, 20))
-        
-        self.btn_process = ttk.Button(controls_frame, text="✨ 执行校正", command=self.process_image, 
-                                      bootstyle=SUCCESS, width=20)
-        self.btn_process.pack(pady=10)
-        
-        self.btn_save = ttk.Button(controls_frame, text="💾 导出结果", command=self.save_image, 
-                                   bootstyle=(INFO, OUTLINE), width=20)
-        self.btn_save.pack(pady=10)
-        
-        # 关于信息 (底部)
-        ttk.Label(self.sidebar, text="v1.1 Premium Build\n© 2024 Antigravity", 
-                  font=("Segoe UI", 8), bootstyle=(INVERSE, DARK), justify=CENTER).pack(side=BOTTOM, pady=20)
-        
-        # --- 主显示区 ---
-        self.main_content = ttk.Frame(self.root, padding=20)
-        self.main_content.pack(side=LEFT, fill=BOTH, expand=True)
-        
-        # 顶部状态条
-        self.header_frame = ttk.Frame(self.main_content)
-        self.header_frame.pack(fill=X, pady=(0, 20))
-        self.status_var = tk.StringVar(value="等待导入...")
-        ttk.Label(self.header_frame, textvariable=self.status_var, font=("Segoe UI", 12), 
-                  bootstyle=SECONDARY).pack(side=LEFT)
-        
-        # 图片展示容器 (双栏布局)
-        self.view_port = ttk.Frame(self.main_content)
-        self.view_port.pack(fill=BOTH, expand=True)
-        
+        # 处理与保存
+        self.btn_process = ctk.CTkButton(self.sidebar_frame, text="✨ 执行校正", command=self.process_image,
+                                        fg_color="#3498db", hover_color="#2980b9", font=ctk.CTkFont(family="微软雅黑", size=14, weight="bold"))
+        self.btn_process.grid(row=5, column=0, padx=20, pady=(30, 10))
+
+        self.btn_save = ctk.CTkButton(self.sidebar_frame, text="💾 导出结果", command=self.save_image,
+                                     fg_color="transparent", border_width=2, text_color=("gray10", "#DCE4EE"), font=ctk.CTkFont(family="微软雅黑", size=14))
+        self.btn_save.grid(row=6, column=0, padx=20, pady=10, sticky="n")
+
+        # 版权信息
+        self.appearance_mode_label = ctk.CTkLabel(self.sidebar_frame, text="v2.0 \n© 2024 AWB Project", font=ctk.CTkFont(size=10))
+        self.appearance_mode_label.grid(row=7, column=0, padx=20, pady=20)
+
+        # --- 主内容区 ---
+        self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
+        self.main_frame.grid_columnconfigure((0, 1), weight=1)
+        self.main_frame.grid_rowconfigure(1, weight=1)
+
+        # 顶部状态栏
+        self.status_label = ctk.CTkLabel(self.main_frame, text="等待导入图片...", font=ctk.CTkFont(family="微软雅黑", size=16))
+        self.status_label.grid(row=0, column=0, columnspan=2, pady=(0, 20), sticky="w")
+
+        # 图片区域容器
         # 原图卡片
-        self.left_card = ttk.Labelframe(self.view_port, text=" 原始效果 ", padding=10)
-        self.left_card.pack(side=LEFT, fill=BOTH, expand=True, padx=(0, 10))
-        self.canvas_left = tk.Canvas(self.left_card, bg="#f8f9fa", highlightthickness=0)
-        self.canvas_left.pack(fill=BOTH, expand=True)
-        
-        # 校正图卡片
-        self.right_card = ttk.Labelframe(self.view_port, text=" AWB 校正结果 ", padding=10)
-        self.right_card.pack(side=LEFT, fill=BOTH, expand=True, padx=(10, 0))
-        self.canvas_right = tk.Canvas(self.right_card, bg="#f8f9fa", highlightthickness=0)
-        self.canvas_right.pack(fill=BOTH, expand=True)
+        self.left_panel = ctk.CTkFrame(self.main_frame)
+        self.left_panel.grid(row=1, column=0, padx=(0, 10), sticky="nsew")
+        ctk.CTkLabel(self.left_panel, text="原始图像", font=ctk.CTkFont(weight="bold")).pack(pady=10)
+        self.canvas_left = ctk.CTkLabel(self.left_panel, text="尚未导入图片", text_color="gray50")
+        self.canvas_left.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        # 处理后卡片
+        self.right_panel = ctk.CTkFrame(self.main_frame)
+        self.right_panel.grid(row=1, column=1, padx=(10, 0), sticky="nsew")
+        ctk.CTkLabel(self.right_panel, text="校正结果", font=ctk.CTkFont(weight="bold")).pack(pady=10)
+        self.canvas_right = ctk.CTkLabel(self.right_panel, text="等待校正...", text_color="gray50")
+        self.canvas_right.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+    def update_slider_label(self, value):
+        self.percent_label_title.configure(text=f"高光像素占比: {value:.1f}%")
+
+    def toggle_percent_param(self, choice):
+        if "完美反射体" in choice:
+            self.percent_frame.grid(row=4, column=0, padx=20, pady=0, sticky="ew")
+        else:
+            self.percent_frame.grid_forget()
 
     def open_image(self):
-        file_path = filedialog.askopenfilename(filetypes=[("Image Files", "*.jpg *.jpeg *.png *.bmp")])
-        if not file_path:
-            return
+        file_path = filedialog.askopenfilename(
+            title="选择图片",
+            filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp *.webp")]
+        )
+        if file_path:
+            # 支持中文路径的读取
+            img_array = np.fromfile(file_path, dtype=np.uint8)
+            self.original_img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
             
-        self.current_path = file_path
-        self.original_img = cv2.imread(file_path)
-        self.show_on_canvas(self.original_img, self.canvas_left)
-        self.status_var.set(f"已加载: {file_path.split('/')[-1]}")
-        
-        # 清空右侧
-        self.canvas_right.delete("all")
-        self.processed_img = None
+            if self.original_img is not None:
+                self.status_label.configure(text=f"已导入: {os.path.basename(file_path)}")
+                self.show_on_label(self.original_img, self.canvas_left)
+                # 清除旧结果
+                self.canvas_right.configure(image=None, text="等待校正...")
+                self.processed_img = None
+            else:
+                messagebox.showerror("错误", "无法解码图片！")
 
     def process_image(self):
         if self.original_img is None:
-            ToastNotification(title="提示", message="请先导入一张图片", duration=3000, bootstyle=WARNING).show()
+            messagebox.showwarning("提示", "请先导入图片！")
             return
+        
+        algo = self.algo_var.get()
+        self.status_label.configure(text="正在处理...")
+        self.update()
+
+        try:
+            if "基础版灰度世界" in algo:
+                self.processed_img = gray_world_awb(self.original_img, use_optimized=False)
+            elif "优化版灰度世界" in algo:
+                self.processed_img = gray_world_awb(self.original_img, use_optimized=True)
+            elif "完美反射体" in algo:
+                self.processed_img = perfect_reflector_awb(self.original_img, top_percent=self.top_percent_var.get()/100.0)
             
-        use_optimized = "优化版" in self.algo_var.get()
-        self.processed_img = gray_world_awb(self.original_img, use_optimized=use_optimized)
-        self.show_on_canvas(self.processed_img, self.canvas_right)
-        self.status_var.set("校正完成！预览已就绪。")
-        ToastNotification(title="成功", message="智能白平衡算法处理完毕", duration=2000, bootstyle=SUCCESS).show_toast()
+            self.show_on_label(self.processed_img, self.canvas_right)
+            self.status_label.configure(text="校正完成！")
+        except Exception as e:
+            messagebox.showerror("处理失败", str(e))
+            self.status_label.configure(text="处理出错")
 
     def save_image(self):
         if self.processed_img is None:
-            messagebox.showwarning("警告", "没有可供保存的校正结果！")
+            messagebox.showwarning("提示", "没有可保存的校正结果！")
             return
             
-        path = filedialog.asksaveasfilename(defaultextension=".jpg", 
-                                            filetypes=[("JPG Image", "*.jpg"), ("PNG Image", "*.png")])
-        if path:
-            cv2.imwrite(path, self.processed_img)
-            ToastNotification(title="导出成功", message=f"图片已保存至该位置", duration=3000, bootstyle=INFO).show_toast()
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".jpg",
+            filetypes=[("JPEG", "*.jpg"), ("PNG", "*.png"), ("BMP", "*.bmp")]
+        )
+        if file_path:
+            # 支持中文路径保存
+            _, ext = os.path.splitext(file_path)
+            success, encoded_img = cv2.imencode(ext, self.processed_img)
+            if success:
+                encoded_img.tofile(file_path)
+                messagebox.showinfo("成功", "图片已保存！")
+            else:
+                messagebox.showerror("错误", "保存失败！")
 
-    def show_on_canvas(self, img, canvas):
-        # 转换并缩放
+    def show_on_label(self, img, label_widget):
+        # 转换 BGR 为 RGB
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img_pil = Image.fromarray(img_rgb)
         
-        # 强制获取画布当前大小 (延迟一下获取更准)
-        self.root.update_idletasks()
-        cw = canvas.winfo_width()
-        ch = canvas.winfo_height()
+        # 获取 Label 的尺寸进行缩放
+        # 注意：CTkLabel 的尺寸在初次渲染前可能不准确，这里使用一个合理的默认值或获取 master 尺寸
+        width = label_widget.winfo_width()
+        height = label_widget.winfo_height()
         
-        if cw < 10: cw, ch = 600, 600 # 初始兜底
+        if width <= 1 or height <= 1: # 还没渲染
+            width, height = 600, 600
         
-        img_pil.thumbnail((cw, ch), Image.Resampling.LANCZOS)
-        img_tk = ImageTk.PhotoImage(img_pil)
+        # OpenCV 缩放
+        h, w = img_rgb.shape[:2]
+        ratio = min(width/w, height/h)
+        new_w, new_h = int(w*ratio), int(h*ratio)
         
-        canvas.delete("all")
-        canvas.create_image(cw//2, ch//2, anchor=CENTER, image=img_tk)
-        canvas.image = img_tk
+        img_resized = cv2.resize(img_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        
+        # 转换为 CTKImage
+        img_pil = Image.fromarray(img_resized)
+        ctk_img = ctk.CTkImage(light_image=img_pil, dark_image=img_pil, size=(new_w, new_h))
+        
+        label_widget.configure(image=ctk_img, text="")
+        # 必须保持引用
+        if label_widget == self.canvas_left:
+            self.display_original = ctk_img
+        else:
+            self.display_processed = ctk_img
 
 if __name__ == "__main__":
-    # 使用 pulse 主题，更具科技感
-    root = ttk.Window(themename="pulse")
-    app = AWBApp(root)
-    root.mainloop()
+    app = AWBApp()
+    app.mainloop()
