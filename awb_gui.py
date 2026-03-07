@@ -6,12 +6,10 @@ from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
 
 # 设置主题和外观
-ctk.set_appearance_mode("Dark")  # Modes: "System" (standard), "Dark", "Light"
-ctk.set_default_color_theme("blue")  # Themes: "blue" (standard), "green", "dark-blue"
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("blue")
 
-from core.awb_algorithms import gray_world_awb, perfect_reflector_awb
-
-# ========== 2. GUI主程序 (CustomTkinter版) ==========
+from core.awb_algorithms import gray_world_awb, perfect_reflector_awb, gray_edge_awb
 
 class AWBApp(ctk.CTk):
     def __init__(self):
@@ -21,10 +19,11 @@ class AWBApp(ctk.CTk):
         self.geometry("1400x900")
         
         # 状态变量
-        self.original_img = None
-        self.processed_img = None
-        self.display_original = None
-        self.display_processed = None
+        self.original_img = None          # 原始图像（未缩放）
+        self.processed_img = None         # 校正后图像（未缩放）
+        self.display_original = None      # 显示用原图CTkImage
+        self.display_processed = None     # 显示用校正图CTkImage
+        self.FIXED_DISPLAY_SIZE = (600, 800)  # 固定显示最大尺寸（统一左右缩放基准）
         
         self.setup_ui()
 
@@ -51,8 +50,19 @@ class AWBApp(ctk.CTk):
 
         # 算法下拉菜单
         self.algo_var = ctk.StringVar(value="优化版灰度世界 (v2)")
-        self.algo_menu = ctk.CTkOptionMenu(self.sidebar_frame, values=["基础版灰度世界 (v0)", "优化版灰度世界 (v2)", "完美反射体算法 (wp)"],
-                                         command=self.toggle_percent_param, variable=self.algo_var, font=ctk.CTkFont(family="微软雅黑", size=13))
+        self.algo_menu = ctk.CTkOptionMenu(
+            self.sidebar_frame, 
+            values=[
+                "基础版灰度世界 (v0)", 
+                "优化版灰度世界 (v2)", 
+                "完美反射体算法 (wp)",
+                "基础版灰度边缘 (e0)",
+                "优化版灰度边缘 (e2)"
+            ],
+            command=self.toggle_param_panel, 
+            variable=self.algo_var, 
+            font=ctk.CTkFont(family="微软雅黑", size=13)
+        )
         self.algo_menu.grid(row=3, column=0, padx=20, pady=10)
 
         # 完美反射体参数调节 (初始隐藏)
@@ -61,17 +71,52 @@ class AWBApp(ctk.CTk):
         self.percent_label_title.pack(anchor="w", padx=0, pady=(10, 0))
         
         self.top_percent_var = ctk.DoubleVar(value=5.0)
-        self.percent_slider = ctk.CTkSlider(self.percent_frame, from_=0.1, to=10.0, number_of_steps=99,
-                                           variable=self.top_percent_var, command=self.update_slider_label)
+        self.percent_slider = ctk.CTkSlider(
+            self.percent_frame, 
+            from_=0.1, to=10.0, number_of_steps=99,
+            variable=self.top_percent_var, 
+            command=self.update_slider_label
+        )
         self.percent_slider.pack(fill="x", padx=0, pady=10)
+
+        # 边缘阈值调节（初始隐藏）
+        self.edge_thresh_frame = ctk.CTkFrame(self.sidebar_frame, fg_color="transparent")
+        self.edge_thresh_label_title = ctk.CTkLabel(
+            self.edge_thresh_frame, 
+            text="边缘检测阈值: 50", 
+            font=ctk.CTkFont(family="微软雅黑", size=12)
+        )
+        self.edge_thresh_label_title.pack(anchor="w", padx=0, pady=(10, 0))
+
+        self.edge_thresh_var = ctk.IntVar(value=50)
+        self.edge_thresh_slider = ctk.CTkSlider(
+            self.edge_thresh_frame, 
+            from_=10, to=100, number_of_steps=90,
+            variable=self.edge_thresh_var, 
+            command=self.update_edge_thresh_label
+        )
+        self.edge_thresh_slider.pack(fill="x", padx=0, pady=10)
         
         # 处理与保存
-        self.btn_process = ctk.CTkButton(self.sidebar_frame, text="✨ 执行校正", command=self.process_image,
-                                        fg_color="#3498db", hover_color="#2980b9", font=ctk.CTkFont(family="微软雅黑", size=14, weight="bold"))
+        self.btn_process = ctk.CTkButton(
+            self.sidebar_frame, 
+            text="✨ 执行校正", 
+            command=self.process_image,
+            fg_color="#3498db", 
+            hover_color="#2980b9", 
+            font=ctk.CTkFont(family="微软雅黑", size=14, weight="bold")
+        )
         self.btn_process.grid(row=5, column=0, padx=20, pady=(30, 10))
 
-        self.btn_save = ctk.CTkButton(self.sidebar_frame, text="💾 导出结果", command=self.save_image,
-                                     fg_color="transparent", border_width=2, text_color=("gray10", "#DCE4EE"), font=ctk.CTkFont(family="微软雅黑", size=14))
+        self.btn_save = ctk.CTkButton(
+            self.sidebar_frame, 
+            text="💾 导出结果", 
+            command=self.save_image,
+            fg_color="transparent", 
+            border_width=2, 
+            text_color=("gray10", "#DCE4EE"), 
+            font=ctk.CTkFont(family="微软雅黑", size=14)
+        )
         self.btn_save.grid(row=6, column=0, padx=20, pady=10, sticky="n")
 
         # 版权信息
@@ -81,24 +126,29 @@ class AWBApp(ctk.CTk):
         # --- 主内容区 ---
         self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.main_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
-        self.main_frame.grid_columnconfigure((0, 1), weight=1)
-        self.main_frame.grid_rowconfigure(1, weight=1)
+        # 固定左右列宽度，确保缩放基准一致
+        self.main_frame.grid_columnconfigure((0, 1), weight=1, minsize=600)
+        self.main_frame.grid_rowconfigure(1, weight=1, minsize=800)
 
         # 顶部状态栏
         self.status_label = ctk.CTkLabel(self.main_frame, text="等待导入图片...", font=ctk.CTkFont(family="微软雅黑", size=16))
         self.status_label.grid(row=0, column=0, columnspan=2, pady=(0, 20), sticky="w")
 
-        # 图片区域容器
+        # 图片区域容器（固定尺寸，消除布局差异）
         # 原图卡片
-        self.left_panel = ctk.CTkFrame(self.main_frame)
+        self.left_panel = ctk.CTkFrame(self.main_frame, width=600, height=800)
         self.left_panel.grid(row=1, column=0, padx=(0, 10), sticky="nsew")
+        # 禁用面板尺寸自动调整
+        self.left_panel.grid_propagate(False)
         ctk.CTkLabel(self.left_panel, text="原始图像", font=ctk.CTkFont(weight="bold")).pack(pady=10)
         self.canvas_left = ctk.CTkLabel(self.left_panel, text="尚未导入图片", text_color="gray50")
         self.canvas_left.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         # 处理后卡片
-        self.right_panel = ctk.CTkFrame(self.main_frame)
+        self.right_panel = ctk.CTkFrame(self.main_frame, width=600, height=800)
         self.right_panel.grid(row=1, column=1, padx=(10, 0), sticky="nsew")
+        # 禁用面板尺寸自动调整
+        self.right_panel.grid_propagate(False)
         ctk.CTkLabel(self.right_panel, text="校正结果", font=ctk.CTkFont(weight="bold")).pack(pady=10)
         self.canvas_right = ctk.CTkLabel(self.right_panel, text="等待校正...", text_color="gray50")
         self.canvas_right.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -106,11 +156,19 @@ class AWBApp(ctk.CTk):
     def update_slider_label(self, value):
         self.percent_label_title.configure(text=f"高光像素占比: {value:.1f}%")
 
-    def toggle_percent_param(self, choice):
+    def update_edge_thresh_label(self, value):
+        self.edge_thresh_label_title.configure(text=f"边缘检测阈值: {int(value)}")
+
+    def toggle_param_panel(self, choice):
+        # 隐藏所有参数面板
+        self.percent_frame.grid_forget()
+        self.edge_thresh_frame.grid_forget()
+        
+        # 显示对应面板
         if "完美反射体" in choice:
             self.percent_frame.grid(row=4, column=0, padx=20, pady=0, sticky="ew")
-        else:
-            self.percent_frame.grid_forget()
+        elif "灰度边缘" in choice:
+            self.edge_thresh_frame.grid(row=4, column=0, padx=20, pady=0, sticky="ew")
 
     def open_image(self):
         file_path = filedialog.askopenfilename(
@@ -124,6 +182,7 @@ class AWBApp(ctk.CTk):
             
             if self.original_img is not None:
                 self.status_label.configure(text=f"已导入: {os.path.basename(file_path)}")
+                # 显示原图（基于固定尺寸缩放）
                 self.show_on_label(self.original_img, self.canvas_left)
                 # 清除旧结果
                 self.canvas_right.configure(image=None, text="等待校正...")
@@ -135,19 +194,41 @@ class AWBApp(ctk.CTk):
         if self.original_img is None:
             messagebox.showwarning("提示", "请先导入图片！")
             return
-        
+    
         algo = self.algo_var.get()
         self.status_label.configure(text="正在处理...")
         self.update()
 
         try:
             if "基础版灰度世界" in algo:
-                self.processed_img = gray_world_awb(self.original_img, use_optimized=False)
+                self.processed_img = gray_world_awb(self.original_img, use_optimized=False, bright_protect=True)
             elif "优化版灰度世界" in algo:
-                self.processed_img = gray_world_awb(self.original_img, use_optimized=True)
+                self.processed_img = gray_world_awb(self.original_img, use_optimized=True, bright_protect=True)
             elif "完美反射体" in algo:
                 self.processed_img = perfect_reflector_awb(self.original_img, top_percent=self.top_percent_var.get()/100.0)
-            
+            elif "基础版灰度边缘" in algo:
+                self.processed_img = gray_edge_awb(
+                    self.original_img, 
+                    edge_threshold=self.edge_thresh_var.get(),
+                    use_optimized=False,
+                    bright_protect=True
+                )
+            elif "完美反射体" in algo:
+                self.processed_img = perfect_reflector_awb(self.original_img, top_percent=self.top_percent_var.get()/100.0)
+            elif "基础版灰度边缘" in algo:
+                self.processed_img = gray_edge_awb(
+                self.original_img, 
+                edge_threshold=self.edge_thresh_var.get(),
+                use_optimized=False,
+                bright_protect=True
+                )
+            elif "优化版灰度边缘" in algo:
+                self.processed_img = gray_edge_awb(
+                    self.original_img, 
+                    edge_threshold=self.edge_thresh_var.get(),
+                    use_optimized=True,
+                    bright_protect=True
+                )
             self.show_on_label(self.processed_img, self.canvas_right)
             self.status_label.configure(text="校正完成！")
         except Exception as e:
@@ -164,7 +245,7 @@ class AWBApp(ctk.CTk):
             filetypes=[("JPEG", "*.jpg"), ("PNG", "*.png"), ("BMP", "*.bmp")]
         )
         if file_path:
-            # 支持中文路径保存
+            # 支持中文路径保存（保存原始尺寸的校正图，而非显示尺寸）
             _, ext = os.path.splitext(file_path)
             success, encoded_img = cv2.imencode(ext, self.processed_img)
             if success:
@@ -174,30 +255,43 @@ class AWBApp(ctk.CTk):
                 messagebox.showerror("错误", "保存失败！")
 
     def show_on_label(self, img, label_widget):
-        # 转换 BGR 为 RGB
+        """
+        修复后的显示逻辑：
+        1. 始终基于固定尺寸（self.FIXED_DISPLAY_SIZE）缩放
+        2. 从原始图像（未缩放）计算缩放比例，避免累积误差
+        3. 统一RGB转换和插值方式，确保左右显示一致
+        """
+        # 转换 BGR 为 RGB（统一色彩空间）
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        # 获取 Label 的尺寸进行缩放
-        # 注意：CTkLabel 的尺寸在初次渲染前可能不准确，这里使用一个合理的默认值或获取 master 尺寸
-        width = label_widget.winfo_width()
-        height = label_widget.winfo_height()
-        
-        if width <= 1 or height <= 1: # 还没渲染
-            width, height = 600, 600
-        
-        # OpenCV 缩放
+        # 获取固定显示尺寸（统一缩放基准）
+        max_w, max_h = self.FIXED_DISPLAY_SIZE
+        # 获取图像原始尺寸
         h, w = img_rgb.shape[:2]
-        ratio = min(width/w, height/h)
-        new_w, new_h = int(w*ratio), int(h*ratio)
         
-        img_resized = cv2.resize(img_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        # 计算等比例缩放比例（避免拉伸）
+        ratio = min(max_w / w, max_h / h)
+        new_w = int(w * ratio)
+        new_h = int(h * ratio)
         
-        # 转换为 CTKImage
+        # 高质量缩放（统一插值方式）
+        img_resized = cv2.resize(
+            img_rgb, 
+            (new_w, new_h), 
+            interpolation=cv2.INTER_LANCZOS4  # 最高质量插值，避免模糊
+        )
+        
+        # 转换为 CTkImage（固定size参数，避免尺寸偏差）
         img_pil = Image.fromarray(img_resized)
-        ctk_img = ctk.CTkImage(light_image=img_pil, dark_image=img_pil, size=(new_w, new_h))
+        ctk_img = ctk.CTkImage(
+            light_image=img_pil, 
+            dark_image=img_pil, 
+            size=(new_w, new_h)
+        )
         
+        # 更新Label显示
         label_widget.configure(image=ctk_img, text="")
-        # 必须保持引用
+        # 保持CTkImage引用（防止被GC回收）
         if label_widget == self.canvas_left:
             self.display_original = ctk_img
         else:
