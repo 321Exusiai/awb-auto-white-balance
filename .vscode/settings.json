@@ -19,5 +19,6 @@
             ]
         }
     ],
-    "latex-workshop.view.pdf.viewer": "tab"
+    "latex-workshop.view.pdf.viewer": "tab",
+    "python.defaultInterpreterPath": "C:/Users/王为韬/.virtualenvs/awb-auto-white-balance/Scripts/python.exe"
 }

@@ -1,0 +1,12 @@
+# Darkroom Nonclassic - 自动白平衡图像处理工具
+# 依赖包列表
+
+# 图像处理核心库（包含 contrib 扩展模块）
+opencv-contrib-python>=4.8.0
+numpy>=1.24.0
+
+# GUI 库
+customtkinter>=5.2.0
+Pillow>=10.0.0
+
+# 安装命令：pip install -r requirements.txt
